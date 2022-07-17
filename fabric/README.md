@@ -1,12 +1,12 @@
-# This require you to install fabric either from operating system package manager
+## This require you to install fabric either from operating system package manager
 
-(Debian/Ubuntu based linux OS )
-# sudo apt update && sudo apt install fabric
+## (Debian/Ubuntu based linux OS )
+<sub> sudo apt update && sudo apt install fabric </sub>
 
-(RPM based Linux) 
-# sudo yum install epel-release -y && yum install fabric
+## (RPM based Linux) 
+<sub> sudo yum install epel-release -y && yum install fabric </sub>
 
-or install fabric using python pip
+## or install fabric using python pip
 
-# pip install fabric
+<sup> pip install fabric </sup>
 
