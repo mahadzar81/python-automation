@@ -11,6 +11,6 @@ sudo yum install epel-release -y && yum install fabric
 
 ## or install fabric using python pip
 ```
-pip install fabric 
+python3 -m pip install fabric
 ```
 
