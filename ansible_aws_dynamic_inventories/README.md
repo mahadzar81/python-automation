@@ -4,7 +4,7 @@ A simple script that uses uses theAWS Boto3 python module to generate AWS EC2 In
 
 Ansible will call it with the argument --list when you run
 
-P/S : Credit to Jeff Geerling for guidelines -> https://www.jeffgeerling.com/blog/creating-custom-dynamic-inventories-ansible
+P/S : Credit to Jeff Geerling for [guidelines]
 
 ## Prerequisites
 Use git clone to download this repository to the system that will run the script. Boto3 python module is required.
@@ -22,4 +22,4 @@ This script will iterate all EC2 instances for all AWS regions and creating cust
 ansible all -i ec2_inventory.py -m ping
 
 ```
-
+[guidelines]: https://www.jeffgeerling.com/blog/creating-custom-dynamic-inventories-ansible
