@@ -1,154 +1,151 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 import paramiko
 import sys
 import socket
 import time
 import logging
 import threading
-import Queue
+import queue  # Use queue.Queue for Python 3
 import argparse
 import json
+from dataclasses import dataclass
+from typing import List
 
-#Number of threads
-n_thread = 15
-#Create queue
-queue = Queue.Queue()
+# Constants
+DEFAULT_NUM_THREADS = 15
 
-def get_args():
-  parser = argparse.ArgumentParser(description='''
-                        # example : python run_command.py --file info.json\
-                        Sample of info.json file entries as below:
-                        [
-                            {
-                              "username":"<username>",
-                              "credential":"<credential>",
-                              "_comment": "filepath is list of CAS IP address seperated by each line",
-                              "filepath":"/tmp/list_nodes.txt",
-                              "log_file":"/tmp/run_command.log",
-                              "_comment": "command file is list of command to run",
-                              "command_file":"/tmp/list_command.txt"
-                            }
-                        ]
-            ''')
-  parser.add_argument("-f",
-                      "--file",
-                      required=True,
-                      action='store',
-                      help='source json files',
-                      )
-  args = parser.parse_args()
-  return args
+@dataclass
+class SSHConfig:
+    username: str
+    credential: str
+    hosts_file: str
+    log_file: str
+    commands_file: str
 
-def get_json_info(json_file):
+class SSHThread(threading.Thread):
+    def __init__(self, task_queue, config, commands):
+        super().__init__(daemon=True)
+        self.task_queue = task_queue
+        self.config = config
+        self.commands = commands
 
-  with open(json_file) as data_file:  
-    data = json.load(data_file)
-    for x in data:
-      username = x["username"]
-      credential = x["credential"]
-      filepath = x["filepath"]
-      log_file = x["log_file"]
-      command_file = x["command_file"]
+    def run(self):
+        while True:
+            try:
+                host = self.task_queue.get()
+                self.process_host(host.strip())
+                self.task_queue.task_done()
+            except queue.Empty:
+                break
+            except Exception as e:
+                logging.error(f"Thread error: {str(e)}")
 
-  return {
-  'username':username, 'credential':credential, 'filepath':filepath, 
-  'log_file':log_file, 'command_file':command_file
-  } 
+    def process_host(self, host):
+        try:
+            with paramiko.SSHClient() as client:
+                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                client.connect(
+                    hostname=host,
+                    username=self.config.username,
+                    password=self.config.credential,
+                    look_for_keys=False,
+                    allow_agent=False,
+                    timeout=10
+                )
+                logging.info(f"SSH connection established to {host}")
+                
+                with client.invoke_shell() as shell:
+                    self.disable_paging(shell)
+                    self.execute_commands(shell, host)
 
-args = get_args()
-json_file=args.file
-result = get_json_info(json_file)
-username = result['username']
-credential = result['credential']
-filepath = result['filepath']    
-log_file = result['log_file']  
-command_file = result["command_file"] 
+        except (paramiko.SSHException, socket.error) as e:
+            logging.error(f"Connection failed to {host}: {str(e)}")
 
-logging.basicConfig(format='%(asctime)s %(message)s', filename='{0}' .format(log_file),level=logging.ERROR)
-#-------------------------------------------------------------------------------
-# simple Thread class
-#-------------------------------------------------------------------------------
+    def disable_paging(self, shell):
+        shell.send("terminal length 0\n")
+        time.sleep(0.5)
+        self._read_output(shell)
 
-class ThreadClass(threading.Thread):
-  def __init__(self, queue):
-    threading.Thread.__init__(self)
-    self.queue = queue
+    def execute_commands(self, shell, host):
+        shell.send("en\n")
+        shell.send(f"{self.config.credential}\n")
+        time.sleep(1)  # Wait for enable prompt
+        
+        for cmd in self.commands:
+            shell.send(f"{cmd}\n")
+            output = self._read_output(shell)
+            logging.info(f"Output from {host} for '{cmd.strip()}':\n{output}")
 
-  def run(self):
-    while True:
-      try:
-        host = self.queue.get()
-        print self.getName() + ":" + host
-        run_command(host)
-        self.queue.task_done()
-      except:
-        pass
-#-------------------------------------------------------------------------------
-# Main Thread
-#-------------------------------------------------------------------------------
+    def _read_output(self, shell, timeout=2):
+        output = ""
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+            if shell.recv_ready():
+                output += shell.recv(4096).decode('utf-8')
+            else:
+                time.sleep(0.1)
+        return output
 
-for i in range(n_thread):
-  t = ThreadClass(queue)
-  t.setDaemon(True)
-  #Start thread
-  t.start()
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='Execute commands on multiple network devices',
+        epilog='Example JSON config: [{"username":"user", "credential":"pass", "filepath":"hosts.txt", "log_file":"output.log", "command_file":"commands.txt"}]'
+    )
+    parser.add_argument("-f", "--file", required=True, help="JSON configuration file")
+    return parser.parse_args()
 
+def load_config(json_file) -> SSHConfig:
+    with open(json_file) as f:
+        configs = json.load(f)
+        if len(configs) != 1:
+            raise ValueError("JSON config must contain exactly one configuration object")
+        conf = configs[0]
+        return SSHConfig(
+            username=conf["username"],
+            credential=conf["credential"],
+            hosts_file=conf["filepath"],
+            log_file=conf["log_file"],
+            commands_file=conf["command_file"]
+        )
 
-#-------------------------------------------------------------------------------
-# Other function
-#-------------------------------------------------------------------------------
-
-def disable_paging(remote_conn):
-  remote_conn.send("terminal length 0\n")
-  time.sleep(1)
-  output = remote_conn.recv(1000)
-  return output
-
-def run_command(host):
-    
-  username = username
-  cas_ip = host.strip()
-  password = credential
-  try:
-    remote_conn_pre = paramiko.SSHClient()
-    remote_conn_pre.set_missing_host_key_policy(
-    paramiko.AutoAddPolicy())
-    remote_conn_pre.connect(host, username=username, password=credential, look_for_keys=False, allow_agent=False, timeout=10)
-    print "SSH connection established to %s" % host
-    remote_conn = remote_conn_pre.invoke_shell()
-    print "SSH session established"
-    output = remote_conn.recv(100000)
-    print output
-    disable_paging(remote_conn)
-
-    remote_conn.send("en\n")
-    remote_conn.send("%s\n" % password)
-    with open(command_file, "r") as conf_file:
-      conf_list = conf_file.readlines()
-      for command in conf_list:
-        remote_conn.send("%s\n" % command)
-        buff = ''
-        while not buff.endswith('# '):
-          output_command = remote_conn.recv(1000000)
-          buff += output_command
-          print buff
-          print "closing ssh connection"
-
-  except (paramiko.SSHException, socket.error) as error:
-    print "%s on %s"  % (error,host)
-    logging.error('%s on %s' % (error,host))
+def read_lines(file_path) -> List[str]:
+    with open(file_path) as f:
+        return [line.strip() for line in f if line.strip()]
 
 def main():
-  with open(filepath, "r") as conf_file:
-    conf_list = conf_file.readlines()
-    x = len(conf_list)
+    args = parse_args()
+    config = load_config(args.file)
+    
+    # Setup logging
+    logging.basicConfig(
+        filename=config.log_file,
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Read configuration files
+    hosts = read_lines(config.hosts_file)
+    commands = read_lines(config.commands_file)
 
+    # Create and populate task queue
+    task_queue = queue.Queue()
+    for host in hosts:
+        task_queue.put(host)
+
+    # Create and start threads
     threads = []
-    for host in conf_list:
-      queue.put(host)
-      queue.join()    
+    for _ in range(DEFAULT_NUM_THREADS):
+        thread = SSHThread(task_queue, config, commands)
+        thread.start()
+        threads.append(thread)
+
+    # Wait for all tasks to complete
+    task_queue.join()
+
+    # Clean up threads
+    for thread in threads:
+        thread.join()
 
 if __name__ == "__main__":
-  main()
-
- 
+    main()
