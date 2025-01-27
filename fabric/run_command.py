@@ -1,102 +1,103 @@
-import os
-import sys
-import platform
-import paramiko
-import socket
-import time
-import logging
-import json
 import argparse
-from subprocess import call
-from fabric import tasks
-from fabric.api import *
-from getpass import getpass
-from fabric.contrib.files import exists, upload_template, sed, cd
-from fabric.exceptions import NetworkError
-from os.path import expanduser
-from fabric.network import disconnect_all
+import json
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from fabric import Connection
+from invoke.exceptions import UnexpectedExit
 
-def print_argument():
-	print """# you need to install fabric by running apt-get install fabric on local machines
+def print_help():
+    print("""Usage instructions and JSON format help here...""")
 
-        # example : python run_command.py --file info.json
-	Sample of info.json file entries as below:
-		[
-  			{
-  				"env.user":"<username>",
-  				"env.password":"<password>",
-  				"_comment": "filepath is list of ops IP address seperated by each line",
-  				"filepath":"/tmp/list_nodes.txt",
-  				"log_file":"/tmp/run_command.log",
-  				"_comment": "command file is list of command to run",
-  				"command_file":"/tmp/list_command.txt"
-  			}
-		]
-
-	"""
 def get_args():
+    parser = argparse.ArgumentParser(description=print_help())
+    parser.add_argument("-f", "--file", required=True, help='Path to JSON configuration file')
+    return parser.parse_args()
 
-	parser = argparse.ArgumentParser(description=print_argument())
-	parser.add_argument("-f", "--file",required=True,action='store',help='source json files')
-	args = parser.parse_args()
-	return args
+def load_config(json_file):
+    with open(json_file) as f:
+        configs = json.load(f)
+    return {
+        'user': configs[0]['env.user'],
+        'password': configs[0]['env.password'],
+        'hosts_file': configs[0]['filepath'],
+        'log_file': configs[0]['log_file'],
+        'command_file': configs[0]['command_file']
+    }
 
-def get_json_info(json_file):
-	""" get json properties """
-	with open(json_file) as data_file:
-		data = json.load(data_file)
-		for x in data:
-			env.user = x["env.user"]
-			env.password = x["env.password"]
-			filepath = x["filepath"]
-			log_file = x["log_file"]
-			command_file = x["command_file"]
+def read_hosts(hosts_file):
+    with open(hosts_file) as f:
+        return [line.strip() for line in f if line.strip()]
 
-	return {
-           'env.user':env.user, 'env.password':env.password , 'filepath':filepath, 'log_file':log_file,'command_file':command_file
-            } 
+def read_commands(command_file):
+    with open(command_file) as f:
+        return [line.strip() for line in f if line.strip()]
 
-# global variables
-env.warn_only=True
-env.connection_attempts = 3
-home = expanduser("~")
-args = get_args()
-json_file=args.file
-result = get_json_info(json_file)
-env.user = result['env.user']
-env.password = result['env.password']
-filepath = result['filepath']    
-log_file = result['log_file']  
-command_file = result["command_file"] 
-env.hosts = open(filepath, 'r').readlines()
-logging.basicConfig(format='%(asctime)s %(message)s', filename='{0}' .format(log_file),level=logging.ERROR)
-
-@parallel(pool_size=15)
-def run_command():
-	""" run command """
-	with open(command_file, "r") as conf_file:
-		conf_list = conf_file.readlines()
-		for command in conf_list:
-			try:
-				run_command = sudo("{0}".format(command))
-				if run_command.return_code !=0:
-					print "run %s issue on %s" % (run_command, env.host_string)
-					logging.error('run command issue on %s' % env.host_string)
-
-			except NetworkError as error:
-				print error
-				logging.error(error) 
-
-
+def execute_commands(host, user, password, commands):
+    """Execute commands on a single host using Fabric 2 Connection"""
+    try:
+        conn = Connection(
+            host=host,
+            user=user,
+            connect_kwargs={'password': password}
+        )
+        
+        logging.info(f"Starting execution on {host}")
+        
+        for cmd in commands:
+            try:
+                result = conn.sudo(cmd, warn=True, hide=True)
+                if result.failed:
+                    error_msg = f"Command failed on {host}: {cmd}\nError: {result.stderr}"
+                    logging.error(error_msg)
+                    print(f"ERROR {host}: {cmd} failed")
+                else:
+                    logging.info(f"Success on {host}: {cmd}")
+                    print(f"OK {host}: {cmd} executed")
+                    
+            except UnexpectedExit as e:
+                error_msg = f"Unexpected error on {host}: {str(e)}"
+                logging.error(error_msg)
+                print(f"ERROR {host}: {e}")
+                
+        conn.close()
+    except Exception as e:
+        error_msg = f"Connection failed to {host}: {str(e)}"
+        logging.error(error_msg)
+        print(f"CONNECTION ERROR {host}: {e}")
 
 def main():
-	
-	uts_dict = tasks.execute(run_command)
-	disconnect_all()
+    args = get_args()
+    config = load_config(args.file)
+    
+    # Configure logging
+    logging.basicConfig(
+        filename=config['log_file'],
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    
+    hosts = read_hosts(config['hosts_file'])
+    commands = read_commands(config['command_file'])
+    
+    print(f"Starting execution on {len(hosts)} hosts with {len(commands)} commands")
+    
+    # Execute commands in parallel with thread pool
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = []
+        for host in hosts:
+            futures.append(
+                executor.submit(
+                    execute_commands,
+                    host,
+                    config['user'],
+                    config['password'],
+                    commands
+                )
+            )
+        
+        # Wait for all tasks to complete
+        for future in futures:
+            future.result()
 
 if __name__ == '__main__':
-	main()
-
-
-
-
+    main()
